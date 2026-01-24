@@ -1,0 +1,4 @@
+[pytest]
+filterwarnings = [
+  "ignore::Bio.PDB.PDBExceptions.PDBConstructionWarning"
+]

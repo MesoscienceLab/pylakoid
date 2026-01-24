@@ -1,0 +1,14 @@
+site_name: "pylakoid"
+
+theme:
+  name: "material"
+
+plugins:
+- mkdocstrings:
+    handlers:
+      python:
+        options:
+          separate_signature: true
+          show_source: false
+          show_root_heading: true
+          show_signature_annotations: true
