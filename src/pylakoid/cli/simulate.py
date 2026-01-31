@@ -269,7 +269,7 @@ def simulate(
         {name: parse_pdb(name, v.path) for name, v in valid_config.pdb.items()},
         protein_type_map,
     )
-    swapper = anneal.SwapAdjacentRandomly(len(tempering_params))
+    swapper = anneal.SwapAdjacentRandomly()
     k1, key = jax.random.split(key, 2)
     force_field_exact = ffh.prepare_exact_force_field(
         {name: v.path for name, v in valid_config.pdb.items()},
