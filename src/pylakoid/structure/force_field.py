@@ -290,6 +290,37 @@ class ClampedSplineForceField(eqx.Module):
         )
 
 
+class ZeroForceField(eqx.Module):
+    """
+    Force field that always returns zero energy. Useful for testing.
+    """
+
+    def __call__(
+        self,
+        com1: Float[Array, "2"],
+        angle1: Float[Array, ""],
+        pt1: Int[Array, ""],
+        com2: Float[Array, "2"],
+        angle2: Float[Array, ""],
+        pt2: Int[Array, ""],
+    ) -> Float[Array, ""]:
+        """
+        Return zero energy regardless of configuration.
+
+        Parameters:
+            com1: The 2d center of mass of the first protein.
+            angle1: The angle to rotate the first protein about the z-axis.
+            pt1: The type of the first protein.
+            com2: The 2d center of mass of the second protein.
+            angle2: The angle to rotate the second protein about the z-axis.
+            pt2: The type of the second protein.
+
+        Returns:
+            Zero energy.
+        """
+        return jnp.array(0.0)  # pyright: ignore [reportUnknownMemberType]
+
+
 class AtomicOverlapForceField(eqx.Module):
     """
     Calculate the number of atomic overlaps using a fast method based on preprocessing. This is

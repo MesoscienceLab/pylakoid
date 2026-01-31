@@ -646,6 +646,30 @@ Returns:
     (Float[Array, " m"]): The resulting energies after swapping.
 """
 
+SwapperWithStats = Callable[
+    [
+        MultiMembrane,
+        Float[Array, " m"],
+        Float[Array, " m"],
+        Key[Array, ""],
+    ],
+    tuple[MultiMembrane, Float[Array, " m"], Int[Array, "m_minus_1 2"]],
+]
+"""
+Type for swapper functions that return swap statistics.
+
+Parameters:
+    multi_membrane (MultiMembrane): The `MultiMembrane` in which membranes may be swapped.
+    energy (Float[Array, " m"]): The energies of the membranes.
+    kBT (Float[Array, " m"]): The energy scales of the membranes.
+    key (Key[Array, ""]): A JAX random key.
+
+Returns:
+    (MultiMembrane): The resulting `MultiMembrane` after swapping.
+    (Float[Array, " m"]): The resulting energies after swapping.
+    (Int[Array, "m_minus_1 2"]): Swap statistics. Column 0 is attempts, column 1 is successes.
+"""
+
 
 class SwapAdjacentRandomly(eqx.Module):
     """
@@ -710,6 +734,97 @@ class SwapAdjacentRandomly(eqx.Module):
         return typing.cast(
             tuple[MultiMembrane, Float[Array, " m"]],
             jax.lax.fori_loop(0, self.num_swaps, f, (multi_membrane, energy)),  # pyright: ignore [reportUnknownMemberType]
+        )
+
+
+class SwapAdjacentRandomlyWithStats(eqx.Module):
+    """
+    Like SwapAdjacentRandomly but returns per-pair swap statistics.
+
+    Repeats the following `num_swaps` times: chooses a pair of adjacent membranes at random,
+    and attempts to swap them with probability from Metropolis-Hastings.
+
+    Attributes:
+        num_swaps: The number of times to attempt swaps.
+    """
+
+    num_swaps: int
+
+    def __call__(
+        self,
+        multi_membrane: MultiMembrane,
+        energy: Float[Array, " m"],
+        kBT: Float[Array, " m"],
+        key: Key[Array, ""],
+    ) -> tuple[MultiMembrane, Float[Array, " m"], Int[Array, "m_minus_1 2"]]:
+        """
+        Swap adjacent membranes at random and track statistics.
+
+        Parameters:
+            multi_membrane: The `MultiMembrane` in which membranes may be swapped.
+            energy: The energies of the membranes.
+            kBT: The energy scales of the membranes.
+            key: A JAX random key.
+
+        Returns:
+            (MultiMembrane): The resulting `MultiMembrane` after swapping.
+            (Float[Array, " m"]): The resulting energies after swapping.
+            (Int[Array, "m_minus_1 2"]): Per-pair statistics. Column 0 is attempts, column 1 is successes.
+        """
+        keys = jax.random.split(key, self.num_swaps)
+        del key
+
+        num_pairs = energy.shape[0] - 1
+        initial_stats = jnp.zeros((num_pairs, 2), dtype=jnp.int32)  # pyright: ignore [reportUnknownMemberType]
+
+        def f(
+            i: Int[Array, ""],
+            args: tuple[MultiMembrane, Float[Array, " m"], Int[Array, "m_minus_1 2"]],
+        ) -> tuple[MultiMembrane, Float[Array, " m"], Int[Array, "m_minus_1 2"]]:
+            membrane, energy, stats = args
+            k1, k2 = jax.random.split(keys[i], 2)
+
+            j = jax.random.randint(k1, (), minval=0, maxval=energy.shape[0] - 1)  # pyright: ignore [reportUnknownMemberType]
+            del k1
+            rand = jax.random.uniform(k2, ())  # pyright: ignore [reportUnknownMemberType]
+            del k2
+
+            def swap(x: Float[Array, "m ..."]):
+                x1 = x[j]
+                x2 = x[j + 1]
+                return x.at[j].set(x2).at[j + 1].set(x1)
+
+            p_accept = (1 / kBT[j] - 1 / kBT[j + 1]) * (energy[j] - energy[j + 1])
+            accepted = (p_accept > 1) | (rand < p_accept)
+
+            new_membrane, new_energy = typing.cast(
+                tuple[MultiMembrane, Float[Array, " m"]],
+                jax.lax.cond(  # pyright: ignore [reportUnknownMemberType]
+                    accepted,
+                    lambda: (jax.tree.map(swap, membrane), swap(energy)),
+                    lambda: (membrane, energy),
+                ),
+            )
+
+            # Update stats: increment attempts for pair j, increment successes if accepted
+            new_stats = stats.at[j, 0].add(1)
+
+            def add_success(s: Int[Array, "m_minus_1 2"]) -> Int[Array, "m_minus_1 2"]:
+                return s.at[j, 1].add(1)
+
+            def no_op(s: Int[Array, "m_minus_1 2"]) -> Int[Array, "m_minus_1 2"]:
+                return s
+
+            new_stats = typing.cast(
+                Int[Array, "m_minus_1 2"],
+                jax.lax.cond(accepted, add_success, no_op, new_stats),  # pyright: ignore [reportUnknownMemberType]
+            )
+
+            return new_membrane, new_energy, new_stats
+
+        return typing.cast(
+            tuple[MultiMembrane, Float[Array, " m"], Int[Array, "m_minus_1 2"]],
+            jax.lax.fori_loop(0, self.num_swaps, f, (multi_membrane, energy, initial_stats)),  # pyright: ignore [reportUnknownMemberType]
         )
 
 
@@ -849,3 +964,140 @@ def parallel_tempering(
         new_initial_energy, get_sharding(initial_energy)
     )
     return multi_membrane, initial_energy
+
+
+def parallel_tempering_with_stats(
+    multi_membrane: MultiMembrane,
+    translatable: Int[Array, " t"],
+    swappable: Bool[Array, "s s"],
+    rotatable: Int[Array, " r"],
+    force_field: ForceField,
+    checker: Checker,
+    swapper: SwapperWithStats,
+    r_max_values: Float[Array, " m"],
+    phi_max_values: Float[Array, " m"],
+    kBT_values: Float[Array, " m"],
+    initial_energy: Float[Array, " m"],
+    n_steps_between_swaps: int,
+    key: Key[Array, ""],
+) -> tuple[MultiMembrane, Float[Array, " m"], Int[Array, "m_minus_1 2"]]:
+    """
+    Like parallel_tempering but returns swap statistics.
+
+    Run `n_steps_between_swaps` of Monte Carlo simulation for each membrane in `multi_membrane`,
+    then use `swapper` to swap membranes and return statistics.
+
+    Parameters:
+        multi_membrane: The `MultiMembrane` that you want to simulate.
+        translatable: The indices of the proteins in `membrane` that can be translated.
+        swappable: `swappable[t1, t2]` is `True` if proteins of type `t1` and `t2` can be swapped.
+        rotatable: The indices of the proteins in `membrane` that can be rotated.
+        force_field: The `ForceField` used for energy calculations.
+        checker: Used to check whether particular moves are permitted.
+        swapper: Used to swap membranes for parallel tempering (must return stats).
+        r_max_values: Max changes in coordinate per replica.
+        phi_max_values: Max changes in angle per replica.
+        kBT_values: Energy scales per replica.
+        initial_energy: The energy of the input membranes.
+        n_steps_between_swaps: Monte Carlo steps per membrane before swapping.
+        key: A JAX random key.
+
+    Returns:
+        The `MultiMembrane` after parallel tempering.
+        The energy of the membranes after parallel tempering.
+        Per-pair swap statistics (attempts in column 0, successes in column 1).
+    """
+    out_sharding = jax.typeof(initial_energy).sharding.spec
+
+    def f(
+        multi_membrane: MultiMembrane,
+        r_max_values: Float[Array, " a"],
+        phi_max_values: Float[Array, " a"],
+        kBT_values: Float[Array, " a"],
+        initial_energy: Float[Array, " a"],
+        key: Key[Array, " a"],
+    ) -> tuple[MultiMembrane, Float[Array, ""]]:
+        def body(
+            i: Int[Array, ""], state: tuple[MultiMembrane, Float[Array, " a"]]
+        ) -> tuple[MultiMembrane, Float[Array, " a"]]:
+            multi_membrane, initial_energy = state
+            membrane = Membrane(
+                multi_membrane.center_of_mass[i],
+                multi_membrane.angle[i],
+                multi_membrane.radius[i],
+                multi_membrane.protein_type[i],
+            )
+            membrane, membrane_energy = run_monte_carlo(
+                membrane,
+                translatable,
+                swappable,
+                rotatable,
+                force_field,
+                checker,
+                r_max_values[i],
+                phi_max_values[i],
+                kBT_values[i],
+                n_steps_between_swaps,
+                key[i],
+                initial_energy=initial_energy[i],
+                out_sharding=out_sharding,
+            )
+            new_multi_membrane = MultiMembrane(
+                state[0].center_of_mass.at[i].set(membrane.center_of_mass),
+                state[0].angle.at[i].set(membrane.angle),
+                state[0].radius.at[i].set(membrane.radius),
+                state[0].protein_type.at[i].set(membrane.protein_type),
+            )
+            new_energy = state[1].at[i].set(membrane_energy)
+            return new_multi_membrane, new_energy
+
+        return typing.cast(
+            tuple[MultiMembrane, Float[Array, " a"]],
+            jax.lax.fori_loop(  # pyright: ignore [reportUnknownMemberType]
+                0, initial_energy.shape[0], body, (multi_membrane, initial_energy)
+            ),
+        )
+
+    def get_sharding(x: Array) -> jax.NamedSharding:
+        return jax.typeof(x).sharding
+
+    def get_partition_spec(x: Array) -> jax.sharding.PartitionSpec:
+        return get_sharding(x).spec
+
+    k1, key = jax.random.split(key, 2)
+    keys = jax.random.split(k1, initial_energy.shape[0])
+    del k1
+    args = (
+        multi_membrane,
+        r_max_values,
+        phi_max_values,
+        kBT_values,
+        initial_energy,
+        keys,
+    )
+    del keys
+    multi_membrane, initial_energy = typing.cast(
+        tuple[MultiMembrane, Float[Array, ""]],
+        jax.shard_map(  # pyright: ignore [reportCallIssue, reportUnknownMemberType]
+            f,
+            out_specs=jax.tree.map(
+                get_partition_spec, (multi_membrane, initial_energy)
+            ),
+        )(*args),
+    )
+
+    new_multi_membrane, new_initial_energy, swap_stats = swapper(
+        jax.sharding.reshard(multi_membrane, jax.sharding.PartitionSpec()),  # pyright: ignore [reportUnknownMemberType]
+        jax.sharding.reshard(initial_energy, jax.sharding.PartitionSpec()),  # pyright: ignore [reportUnknownMemberType]
+        jax.sharding.reshard(kBT_values, jax.sharding.PartitionSpec()),  # pyright: ignore [reportUnknownMemberType]
+        key,
+    )
+    del key
+
+    multi_membrane = jax.sharding.reshard(  # pyright: ignore [reportUnknownMemberType]
+        new_multi_membrane, jax.tree.map(get_sharding, multi_membrane)
+    )
+    initial_energy = jax.sharding.reshard(  # pyright: ignore [reportUnknownMemberType]
+        new_initial_energy, get_sharding(initial_energy)
+    )
+    return multi_membrane, initial_energy, swap_stats

@@ -226,6 +226,35 @@ class CenterOfMassInCircleChecker(eqx.Module):
         return dist <= self.radius[index]
 
 
+class AlwaysAcceptChecker(eqx.Module):
+    """
+    Checker that always accepts. Useful for testing.
+    """
+
+    def __call__(
+        self,
+        com: Float[Array, "2"],
+        angle: Float[Array, ""],
+        pt: Int[Array, ""],
+        index: Int[Array, ""],
+        out_sharding: jax.sharding.PartitionSpec | None = None,
+    ) -> Bool[Array, ""]:
+        """
+        Always return True regardless of configuration.
+
+        Parameters:
+            com: The center of mass of the protein.
+            angle: The angle of the protein.
+            pt: The protein type of the protein.
+            index: The index of the protein.
+            out_sharding: The sharding of the result, used for JAX parallelization.
+
+        Returns:
+            Always `True`.
+        """
+        return jnp.array(True)  # pyright: ignore [reportUnknownMemberType]
+
+
 class MultiChecker(eqx.Module):
     """
     Check if multiple checkers are all valid.
