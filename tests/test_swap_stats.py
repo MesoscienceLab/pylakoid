@@ -151,6 +151,30 @@ def test_swapper_results_match():
     assert jnp.allclose(membrane_old.angle, membrane_new.angle)
 
 
+def test_default_num_swaps_is_one():
+    """Default num_swaps=1 means exactly one swap attempt per call."""
+    num_replicas = 4
+
+    center_of_mass = jnp.zeros((num_replicas, 2, 2))
+    angle = jnp.zeros((num_replicas, 2))
+    radius = jnp.ones((num_replicas, 2))
+    protein_type = jnp.zeros((num_replicas, 2), dtype=jnp.int32)
+    multi_membrane = anneal.MultiMembrane(center_of_mass, angle, radius, protein_type)
+
+    energy = jnp.array([100.0, 80.0, 60.0, 40.0])
+    kBT = jnp.array([1.0, 2.0, 3.0, 4.0])
+
+    key = jax.random.key(42)
+
+    # No num_swaps argument - should default to 1
+    swapper = anneal.SwapAdjacentRandomlyWithStats()
+
+    _, _, swap_stats = swapper(multi_membrane, energy, kBT, key)
+
+    # Total attempts should equal 1
+    assert swap_stats[:, 0].sum() == 1
+
+
 def test_parallel_tempering_with_stats_returns_stats():
     """parallel_tempering_with_stats returns swap statistics."""
     from pylakoid.structure.checker import AlwaysAcceptChecker

@@ -673,14 +673,14 @@ Returns:
 
 class SwapAdjacentRandomly(eqx.Module):
     """
-    Repeats the following `num_swaps` times. Chooses a pair of adjacent membranes at random, and
-    attempts to swap them with probability from Metropolis-Hastings.
+    Chooses a pair of adjacent membranes at random and attempts to swap them with
+    probability from Metropolis-Hastings. Repeats `num_swaps` times (default 1).
 
     Attributes:
-        num_swaps: The number of times to attempt swaps.
+        num_swaps: The number of times to attempt swaps. Defaults to 1.
     """
 
-    num_swaps: int
+    num_swaps: int = 1
 
     def __call__(
         self,
@@ -741,14 +741,14 @@ class SwapAdjacentRandomlyWithStats(eqx.Module):
     """
     Like SwapAdjacentRandomly but returns per-pair swap statistics.
 
-    Repeats the following `num_swaps` times: chooses a pair of adjacent membranes at random,
-    and attempts to swap them with probability from Metropolis-Hastings.
+    Chooses a pair of adjacent membranes at random and attempts to swap them with
+    probability from Metropolis-Hastings. Repeats `num_swaps` times (default 1).
 
     Attributes:
-        num_swaps: The number of times to attempt swaps.
+        num_swaps: The number of times to attempt swaps. Defaults to 1.
     """
 
-    num_swaps: int
+    num_swaps: int = 1
 
     def __call__(
         self,
