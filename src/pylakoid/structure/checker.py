@@ -56,7 +56,7 @@ def is_point_in_polygon(
 
     edge_x = jnp.stack([v[:-1, 0], v[1:, 0]], axis=1)
     edge_y = jnp.stack([v[:-1, 1], v[1:, 1]], axis=1)
-    ind = jnp.arange(0, len(edge_x), dtype=jnp.int32)
+    ind = jnp.arange(0, len(edge_x), dtype=jnp.int32)  # pyright: ignore [reportUnknownMemberType]
     y_min_ind = jnp.argmin(edge_y, axis=1)
 
     x1 = edge_x[ind, y_min_ind]
