@@ -274,3 +274,61 @@ class MultiChecker(eqx.Module):
         for c in self.checkers:
             res = res & c(com, angle, pt, index, out_sharding=out_sharding)
         return res
+
+
+class ConditionalChecker(eqx.Module):
+    """
+    Check if a checker is valid, but only for certain indices.
+
+    Attributes:
+        checker: The checker to apply.
+        indices: `indices[i]` is `True` if the checker should be applied to protein
+            `i`, and false otherwise.
+    """
+
+    checker: Checker
+    indices: Bool[Array, " n"]
+
+    def __init__(self, checker: Checker, indices: Bool[Array, " n"]):
+        """
+        Initialize a `ConditionalChecker`.
+
+        Parameters:
+            checker: The checker to apply.
+            indices: `indices[i]` is `True` if the checker should be applied to protein
+                `i`, and false otherwise.
+        """
+        self.checker = checker
+        self.indices = indices
+
+    def __call__(
+        self,
+        com: Float[Array, "2"],
+        angle: Float[Array, ""],
+        pt: Int[Array, ""],
+        index: Int[Array, ""],
+        out_sharding: jax.sharding.PartitionSpec | None = None,
+    ) -> Bool[Array, ""]:
+        """
+        Check that checker is valid, but only for the specified indices.
+
+        Parameters:
+            com: The center of mass of the protein to check.
+            angle: The angle of the protein to check.
+            pt: The protein type of the protein to check.
+            index: The index of the protein to check.
+            out_sharding: The sharding of the result, used for JAX parallelization.
+
+        Returns:
+            `True` if the checker is valid or the index does not need to be
+                checked, `False` otherwise.
+        """
+        vary = None if out_sharding is None else tuple(out_sharding)  # pyright: ignore [reportUnknownVariableType]
+        return jax.lax.cond(  # pyright: ignore [reportUnknownMemberType, reportUnknownVariableType]
+            self.indices[index],
+            lambda: self.checker(com, angle, pt, index, out_sharding),
+            lambda: typing.cast(
+                Float[Array, ""],
+                jax.lax.pvary(jnp.array(True), vary),  # pyright: ignore [reportUnknownMemberType]
+            ),
+        )

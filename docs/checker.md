@@ -18,6 +18,13 @@ The public API of `pylakoid.structure.checker` consists of the following classes
       - __call__
       heading_level: 3
 
+::: pylakoid.structure.checker.ConditionalChecker
+    options:
+      members:
+      - __init__
+      - __call__
+      heading_level: 3
+
 ::: pylakoid.structure.checker.InsidePolygonChecker
     options:
       members:
