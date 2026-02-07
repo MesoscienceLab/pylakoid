@@ -713,6 +713,67 @@ class SwapAdjacentRandomly(eqx.Module):
         )
 
 
+class SwapEvenOdd(eqx.Module):
+    """
+    Swap membranes (0, 1), (2, 3), ... then (1, 2), (3, 4), ...
+    """
+
+    def __call__(
+        self,
+        multi_membrane: MultiMembrane,
+        energy: Float[Array, " m"],
+        kBT: Float[Array, " m"],
+        key: Key[Array, ""],
+    ) -> tuple[MultiMembrane, Float[Array, " m"]]:
+        """
+        Swap membranes (0, 1), (2, 3), ... then (1, 2), (3, 4), ...
+
+        Parameters:
+            multi_membrane: The `MultiMembrane` in which membranes may be swapped.
+            energy: The energies of the membranes.
+            kBT: The energy scales of the membranes.
+            key: A JAX random key used to generate random numbers during the simulation. [Learn more about JAX pseudorandom number generation.](https://docs.jax.dev/en/latest/random-numbers.html)
+
+        Returns:
+            (MultiMembrane): The resulting `MultiMembrane` after swapping.
+            (Float[Array, " m"]): The resulting energies after swapping.
+        """
+
+        def swap_with_offset(
+            offset: int,
+            multi_membrane: MultiMembrane,
+            energy: Float[Array, " m"],
+            kBT: Float[Array, " m"],
+            key: Key[Array, ""],
+        ):
+            index = jnp.arange(offset, energy.shape[0], 2)  # pyright: ignore [reportUnknownMemberType]
+            p_accept = (1 / kBT[index] - 1 / kBT[index + 1]) * (
+                energy[index] - energy[index + 1]
+            )
+            rand = jax.random.uniform(key, (index.shape[0],))  # pyright: ignore [reportUnknownMemberType]
+            should_swap = (p_accept > 1) | (rand < p_accept)
+            new_index = (
+                jnp.arange(0, energy.shape[0])  # pyright: ignore [reportUnknownMemberType]
+                .at[index]
+                .set(index + should_swap)
+                .at[index + 1]
+                .set(index + 1 - should_swap)
+            )
+
+            def swap(x: Float[Array, "m ..."]):
+                return x[new_index]
+
+            return jax.tree.map(swap, multi_membrane), swap(energy)
+
+        k1, k2 = jax.random.split(key, 2)
+        del key
+        multi_membrane, energy = swap_with_offset(0, multi_membrane, energy, kBT, k1)
+        del k1
+        multi_membrane, energy = swap_with_offset(1, multi_membrane, energy, kBT, k2)
+        del k2
+        return multi_membrane, energy
+
+
 def parallel_tempering(
     multi_membrane: MultiMembrane,
     translatable: Int[Array, " t"],

@@ -21,6 +21,10 @@ The public API of `pylakoid.structure.anneal` consists of the following types, c
     options:
       heading_level: 3
 
+::: pylakoid.structure.anneal.SwapEvenOdd
+    options:
+      heading_level: 3
+
 ::: pylakoid.structure.anneal.parallel_tempering
     options:
       heading_level: 3
