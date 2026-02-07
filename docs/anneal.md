@@ -13,6 +13,12 @@ The public API of `pylakoid.structure.anneal` consists of the following types, c
       - __init__
       heading_level: 3
 
+::: pylakoid.structure.anneal.MultiMembrane
+    options:
+      members:
+      - __init__
+      heading_level: 3
+
 ::: pylakoid.structure.anneal.Swapper
     options:
       heading_level: 3
