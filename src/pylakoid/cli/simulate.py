@@ -144,14 +144,15 @@ def parallel_tempering_loop(
     n_steps_between_swaps_per_protein: int,
     n_swaps: int,
     key: Key[Array, ""],
-) -> tuple[anneal.MultiMembrane, Float[Array, " m"]]:
+) -> tuple[anneal.MultiMembrane, Float[Array, " m"], anneal.SwapStats]:
     keys = jax.random.split(key, n_swaps)
     del key
 
     def f(
-        i: Int[Array, ""], state: tuple[anneal.MultiMembrane, Float[Array, " m"]]
-    ) -> tuple[anneal.MultiMembrane, Float[Array, " m"]]:
-        return anneal.parallel_tempering(
+        i: Int[Array, ""],
+        state: tuple[anneal.MultiMembrane, Float[Array, " m"], anneal.SwapStats],
+    ) -> tuple[anneal.MultiMembrane, Float[Array, " m"], anneal.SwapStats]:
+        multi_membrane, energy, swap_stats = anneal.parallel_tempering(
             state[0],
             translatable,
             swappable,
@@ -166,10 +167,27 @@ def parallel_tempering_loop(
             n_steps_between_swaps_per_protein * translatable.shape[0],
             keys[i],
         )
+        return (
+            multi_membrane,
+            energy,
+            anneal.SwapStats(
+                state[2].n_accepted + swap_stats.n_accepted,
+                state[2].n_attempted + swap_stats.n_attempted,
+            ),
+        )
 
     return typing.cast(
-        tuple[anneal.MultiMembrane, Float[Array, " m"]],
-        jax.lax.fori_loop(0, n_swaps, f, (membrane, initial_energy)),  # pyright: ignore [reportUnknownMemberType]
+        tuple[anneal.MultiMembrane, Float[Array, " m"], anneal.SwapStats],
+        jax.lax.fori_loop(  # pyright: ignore [reportUnknownMemberType]
+            0,
+            n_swaps,
+            f,
+            (
+                membrane,
+                initial_energy,
+                anneal.make_swap_stats(initial_energy.shape[0] - 1),
+            ),
+        ),
     )
 
 
@@ -315,7 +333,7 @@ def simulate(
             k1, key = jax.random.split(key, 2)
             print(f"(Iteration {i + 1}) Starting tempering...")
             start = time.time()
-            multi_membrane, energy = parallel_tempering_fn(
+            multi_membrane, energy, stats = parallel_tempering_fn(
                 multi_membrane,
                 tempering_params,
                 translatable,
@@ -334,6 +352,9 @@ def simulate(
             print(
                 f"(Iteration {i + 1}) Done tempering... energy is {energy} (took {duration} seconds)"
             )
+            acceptance_rate = stats.n_accepted / stats.n_attempted
+            acceptance_rate = jnp.where(jnp.isnan(acceptance_rate), 0, acceptance_rate)
+            print(f"(Iteration {i + 1}) Swap acceptance rates {acceptance_rate}")
             duration = time.time() - started_tempering
             print(
                 f"(Iteration {i + 1}) Total time spent tempering so far is {duration} seconds"

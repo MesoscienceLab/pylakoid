@@ -623,6 +623,35 @@ def total_energies(
     return typing.cast(Float[Array, " m"], jax.lax.map(f, multi_membrane))  # pyright: ignore [reportUnknownMemberType]
 
 
+class SwapStats(eqx.Module):
+    """
+    The number of accepted and attempted swaps during parallel tempering.
+
+    Attributes:
+        n_accepted: The number of accepted swaps.
+        n_attempted: The number of attempted swaps.
+    """
+
+    n_accepted: Int[Array, " m"]
+    n_attempted: Int[Array, " m"]
+
+
+def make_swap_stats(m: int) -> SwapStats:
+    """
+    Initialize an empty SwapStats.
+
+    Parameters:
+        m: One less than the number of membranes.
+
+    Returns:
+        The newly initialized SwapStats.
+    """
+    return SwapStats(
+        jnp.zeros((m,), dtype=jnp.int32),  # pyright: ignore [reportUnknownMemberType]
+        jnp.zeros((m,), dtype=jnp.int32),  # pyright: ignore [reportUnknownMemberType]
+    )
+
+
 Swapper = Callable[
     [
         MultiMembrane,
@@ -630,7 +659,7 @@ Swapper = Callable[
         Float[Array, " m"],
         Key[Array, ""],
     ],
-    tuple[MultiMembrane, Float[Array, " m"]],
+    tuple[MultiMembrane, Float[Array, " m"], SwapStats],
 ]
 """
 Type for functions that can be called to swap membranes while parallel tempering.
@@ -644,6 +673,7 @@ Parameters:
 Returns:
     (MultiMembrane): The resulting `MultiMembrane` after swapping.
     (Float[Array, " m"]): The resulting energies after swapping.
+    (SwapStats): The number of swaps attempted and accepted.
 """
 
 
@@ -664,7 +694,7 @@ class SwapAdjacentRandomly(eqx.Module):
         energy: Float[Array, " m"],
         kBT: Float[Array, " m"],
         key: Key[Array, ""],
-    ) -> tuple[MultiMembrane, Float[Array, " m"]]:
+    ) -> tuple[MultiMembrane, Float[Array, " m"], SwapStats]:
         """
         Swap adjacent membranes at random.
 
@@ -677,14 +707,15 @@ class SwapAdjacentRandomly(eqx.Module):
         Returns:
             (MultiMembrane): The resulting `MultiMembrane` after swapping.
             (Float[Array, " m"]): The resulting energies after swapping.
+            (SwapStats): The number of accepted and attempted swaps.
         """
         keys = jax.random.split(key, self.num_swaps)
         del key
 
         def f(
-            i: Int[Array, ""], args: tuple[MultiMembrane, Float[Array, " m"]]
-        ) -> tuple[MultiMembrane, Float[Array, " m"]]:
-            membrane, energy = args
+            i: Int[Array, ""], args: tuple[MultiMembrane, Float[Array, " m"], SwapStats]
+        ) -> tuple[MultiMembrane, Float[Array, " m"], SwapStats]:
+            membrane, energy, stats = args
             k1, k2 = jax.random.split(keys[i], 2)
 
             j = jax.random.randint(k1, (), minval=0, maxval=energy.shape[0] - 1)  # pyright: ignore [reportUnknownMemberType]
@@ -699,17 +730,40 @@ class SwapAdjacentRandomly(eqx.Module):
 
             p_accept = (1 / kBT[j] - 1 / kBT[j + 1]) * (energy[j] - energy[j + 1])
             return typing.cast(
-                tuple[MultiMembrane, Float[Array, " m"]],
+                tuple[MultiMembrane, Float[Array, " m"], SwapStats],
                 jax.lax.cond(  # pyright: ignore [reportUnknownMemberType]
                     (p_accept > 1) | (rand < p_accept),
-                    lambda: (jax.tree.map(swap, membrane), swap(energy)),
-                    lambda: (membrane, energy),
+                    lambda: (
+                        jax.tree.map(swap, membrane),
+                        swap(energy),
+                        SwapStats(
+                            stats.n_accepted.at[j].add(1),
+                            stats.n_attempted.at[j].add(1),
+                        ),
+                    ),
+                    lambda: (
+                        membrane,
+                        energy,
+                        SwapStats(
+                            stats.n_accepted,
+                            stats.n_attempted.at[j].add(1),
+                        ),
+                    ),
                 ),
             )
 
         return typing.cast(
-            tuple[MultiMembrane, Float[Array, " m"]],
-            jax.lax.fori_loop(0, self.num_swaps, f, (multi_membrane, energy)),  # pyright: ignore [reportUnknownMemberType]
+            tuple[MultiMembrane, Float[Array, " m"], SwapStats],
+            jax.lax.fori_loop(  # pyright: ignore [reportUnknownMemberType]
+                0,
+                self.num_swaps,
+                f,
+                (
+                    multi_membrane,
+                    energy,
+                    make_swap_stats(energy.shape[0] - 1),
+                ),
+            ),
         )
 
 
@@ -724,7 +778,7 @@ class SwapEvenOdd(eqx.Module):
         energy: Float[Array, " m"],
         kBT: Float[Array, " m"],
         key: Key[Array, ""],
-    ) -> tuple[MultiMembrane, Float[Array, " m"]]:
+    ) -> tuple[MultiMembrane, Float[Array, " m"], SwapStats]:
         """
         Swap membranes (0, 1), (2, 3), ... then (1, 2), (3, 4), ...
 
@@ -737,6 +791,7 @@ class SwapEvenOdd(eqx.Module):
         Returns:
             (MultiMembrane): The resulting `MultiMembrane` after swapping.
             (Float[Array, " m"]): The resulting energies after swapping.
+            (SwapStats): The number of accepted and attempted swaps.
         """
 
         def swap_with_offset(
@@ -745,7 +800,7 @@ class SwapEvenOdd(eqx.Module):
             energy: Float[Array, " m"],
             kBT: Float[Array, " m"],
             key: Key[Array, ""],
-        ):
+        ) -> tuple[MultiMembrane, Float[Array, " m"], SwapStats]:
             index = jnp.arange(offset, energy.shape[0], 2)  # pyright: ignore [reportUnknownMemberType]
             p_accept = (1 / kBT[index] - 1 / kBT[index + 1]) * (
                 energy[index] - energy[index + 1]
@@ -763,15 +818,34 @@ class SwapEvenOdd(eqx.Module):
             def swap(x: Float[Array, "m ..."]):
                 return x[new_index]
 
-            return jax.tree.map(swap, multi_membrane), swap(energy)
+            stats_zero = make_swap_stats(energy.shape[0] - 1)
+            return (
+                jax.tree.map(swap, multi_membrane),
+                swap(energy),
+                SwapStats(
+                    stats_zero.n_accepted.at[index].set(should_swap),
+                    stats_zero.n_attempted.at[index].set(1),
+                ),
+            )
 
         k1, k2 = jax.random.split(key, 2)
         del key
-        multi_membrane, energy = swap_with_offset(0, multi_membrane, energy, kBT, k1)
+        multi_membrane, energy, swaps0 = swap_with_offset(
+            0, multi_membrane, energy, kBT, k1
+        )
         del k1
-        multi_membrane, energy = swap_with_offset(1, multi_membrane, energy, kBT, k2)
+        multi_membrane, energy, swaps1 = swap_with_offset(
+            1, multi_membrane, energy, kBT, k2
+        )
         del k2
-        return multi_membrane, energy
+        return (
+            multi_membrane,
+            energy,
+            SwapStats(
+                swaps0.n_accepted + swaps1.n_accepted,
+                swaps0.n_attempted + swaps1.n_attempted,
+            ),
+        )
 
 
 def parallel_tempering(
@@ -788,7 +862,7 @@ def parallel_tempering(
     initial_energy: Float[Array, " m"],
     n_steps_between_swaps: int,
     key: Key[Array, ""],
-) -> tuple[MultiMembrane, Float[Array, " m"]]:
+) -> tuple[MultiMembrane, Float[Array, " m"], SwapStats]:
     """
     Run `n_steps_between_swaps` of Monte Carlo simulation for each membrane in `multi_membrane`,
     then use `swapper` to swap membranes.
@@ -813,8 +887,9 @@ def parallel_tempering(
         key: A JAX random key used to generate random numbers during the simulation. [Learn more about JAX pseudorandom number generation.](https://docs.jax.dev/en/latest/random-numbers.html)
 
     Returns:
-        The `MultiMembrane` after parallel tempering.
-        The energy of the membranes after parallel tempering.
+        (MultiMembrane): The `MultiMembrane` after parallel tempering.
+        (Float[Array, " m"]): The energy of the membranes after parallel tempering.
+        (SwapStats): The number of accepted and attempted swaps.
     """
     out_sharding = jax.typeof(initial_energy).sharding.spec
 
@@ -895,7 +970,7 @@ def parallel_tempering(
         )(*args),
     )
 
-    new_multi_membrane, new_initial_energy = swapper(
+    new_multi_membrane, new_initial_energy, swap_stats = swapper(
         jax.sharding.reshard(multi_membrane, jax.sharding.PartitionSpec()),  # pyright: ignore [reportUnknownMemberType]
         jax.sharding.reshard(initial_energy, jax.sharding.PartitionSpec()),  # pyright: ignore [reportUnknownMemberType]
         jax.sharding.reshard(kBT_values, jax.sharding.PartitionSpec()),  # pyright: ignore [reportUnknownMemberType]
@@ -909,4 +984,4 @@ def parallel_tempering(
     initial_energy = jax.sharding.reshard(  # pyright: ignore [reportUnknownMemberType]
         new_initial_energy, get_sharding(initial_energy)
     )
-    return multi_membrane, initial_energy
+    return multi_membrane, initial_energy, swap_stats
