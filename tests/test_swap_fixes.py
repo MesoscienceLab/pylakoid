@@ -306,3 +306,124 @@ def test_swap_even_odd_is_jit_compatible():
 
     _, _, stats = jitted(mm, energy, kBT, jax.random.key(0))
     assert stats.n_accepted.shape == (num_replicas - 1,)
+
+
+# ---------------------------------------------------------------------------
+# SwapAdjacentRandomly Metropolis acceptance correctness
+# ---------------------------------------------------------------------------
+#
+# SwapAdjacentRandomly had the same missing-exp() Metropolis bug as the
+# original SwapEvenOdd: it computed
+#
+#     p_accept = (1/kT_i - 1/kT_j) * (E_i - E_j)
+#     (p_accept > 1) | (rand < p_accept)
+#
+# treating the log of the Metropolis factor as a probability. These tests
+# pin down the corrected behavior so a future change cannot silently
+# reintroduce it.
+
+
+def test_swap_adjacent_randomly_equal_energies_always_accept():
+    """Equal energies -> log_p_accept = 0 -> exp(0) = 1 -> always accept.
+    The broken code computed p_accept = 0 and `rand < 0` is never True,
+    so no swaps were accepted in this regime."""
+    num_replicas = 3
+    mm = _trivial_multi_membrane(num_replicas)
+    energy = jnp.full((num_replicas,), 50.0)
+    kBT = jnp.array([10.0, 1.0, 0.1])
+    num_swaps = 20
+    key = jax.random.key(0)
+
+    _, _, stats = anneal.SwapAdjacentRandomly(num_swaps)(mm, energy, kBT, key)
+
+    # Every attempt should be accepted (n_accepted == n_attempted on every pair).
+    assert jnp.array_equal(stats.n_accepted, stats.n_attempted)
+    # Total attempts == num_swaps (one pick per inner iteration).
+    assert int(jnp.sum(stats.n_attempted)) == num_swaps
+
+
+def test_swap_adjacent_randomly_anti_equilibrium_always_accept():
+    """Cold replica has higher energy (log_p_accept > 0) -> always accept.
+    This was the only regime the buggy code got directionally right; fix
+    must preserve it.
+
+    Tested with num_swaps=1 per call across many keys so each call sees the
+    same initial state (a successful swap reorders the energy array, which
+    would change the next attempt's log_p_accept sign on a 2-replica ladder)."""
+    num_replicas = 2
+    mm = _trivial_multi_membrane(num_replicas)
+    # Pair (0, 1): (1/0.1 - 1/1.0) * (1000 - 100) = 9 * 900 = 8100 >> 0
+    # -> always accept.
+    energy = jnp.array([1000.0, 100.0])
+    kBT = jnp.array([0.1, 1.0])
+
+    n_keys = 20
+    accept_count = 0
+    for k in range(n_keys):
+        _, _, stats = anneal.SwapAdjacentRandomly(1)(mm, energy, kBT, jax.random.key(k))
+        accept_count += int(jnp.sum(stats.n_accepted))
+    assert accept_count == n_keys
+
+
+def test_swap_adjacent_randomly_equilibrium_rarely_accepts():
+    """log_p_accept very negative -> exp(log_p_accept) ≈ 0 -> never accept.
+    Catches a regression that reintroduces the missing-exp() bug."""
+    num_replicas = 2
+    mm = _trivial_multi_membrane(num_replicas)
+    # log_p_accept = (1/0.1 - 1/1.0) * (10 - 50) = 9 * -40 = -360
+    # -> exp(-360) ≈ 0 -> never accept.
+    energy = jnp.array([10.0, 50.0])
+    kBT = jnp.array([0.1, 1.0])
+
+    n_swaps_per_call = 100
+    n_keys = 20
+    total_accepts = 0
+    for k in range(n_keys):
+        _, _, stats = anneal.SwapAdjacentRandomly(n_swaps_per_call)(
+            mm, energy, kBT, jax.random.key(k)
+        )
+        total_accepts += int(jnp.sum(stats.n_accepted))
+
+    assert total_accepts == 0
+
+
+def test_swap_adjacent_randomly_acceptance_matches_metropolis():
+    """Empirical accept rate matches exp(log_p_accept) within sampling
+    tolerance. Constructed so log_p_accept = -1 -> probability ≈ 0.368,
+    which is neither 0 nor 1 — discriminates the correct exp() form from
+    both bug variants.
+
+    Uses num_swaps=1 per call across many keys so each call sees the same
+    initial (energy, kBT). With num_swaps>1, an accepted swap reorders the
+    energy array on a 2-replica ladder and the next attempt sees the
+    opposite-sign log_p_accept, biasing the empirical rate."""
+    num_replicas = 2
+    mm = _trivial_multi_membrane(num_replicas)
+    # log_p_accept = (1/1 - 1/2) * (10 - 12) = 0.5 * -2 = -1
+    energy = jnp.array([10.0, 12.0])
+    kBT = jnp.array([1.0, 2.0])
+
+    n_keys = 2000
+    accept_count = 0
+    for k in range(n_keys):
+        _, _, stats = anneal.SwapAdjacentRandomly(1)(mm, energy, kBT, jax.random.key(k))
+        accept_count += int(jnp.sum(stats.n_accepted))
+
+    empirical = accept_count / n_keys
+    expected = float(jnp.exp(jnp.array(-1.0)))
+    assert abs(empirical - expected) < 0.03, (
+        f"empirical={empirical:.3f}, expected={expected:.3f} "
+        "(broken: never-accept ~0.0)"
+    )
+
+
+def test_swap_adjacent_randomly_is_jit_compatible():
+    """SwapAdjacentRandomly must compile under eqx.filter_jit."""
+    num_replicas = 4
+    mm = _trivial_multi_membrane(num_replicas)
+    energy = jnp.array([100.0, 80.0, 60.0, 40.0])
+    kBT = jnp.array([10.0, 5.0, 1.0, 0.1])
+
+    jitted = eqx.filter_jit(anneal.SwapAdjacentRandomly(10))
+    _, _, stats = jitted(mm, energy, kBT, jax.random.key(0))
+    assert stats.n_accepted.shape == (num_replicas - 1,)

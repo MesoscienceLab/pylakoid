@@ -728,11 +728,11 @@ class SwapAdjacentRandomly(eqx.Module):
                 x2 = x[j + 1]
                 return x.at[j].set(x2).at[j + 1].set(x1)
 
-            p_accept = (1 / kBT[j] - 1 / kBT[j + 1]) * (energy[j] - energy[j + 1])
+            log_p_accept = (1 / kBT[j] - 1 / kBT[j + 1]) * (energy[j] - energy[j + 1])
             return typing.cast(
                 tuple[MultiMembrane, Float[Array, " m"], SwapStats],
                 jax.lax.cond(  # pyright: ignore [reportUnknownMemberType]
-                    (p_accept > 1) | (rand < p_accept),
+                    (log_p_accept > 0) | (rand < jnp.exp(log_p_accept)),
                     lambda: (
                         jax.tree.map(swap, membrane),
                         swap(energy),
