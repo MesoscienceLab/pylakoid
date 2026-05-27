@@ -94,6 +94,6 @@ def prepare_swappable(
     for i_str, j_str in can_swap:
         i = protein_type_map[i_str]
         j = protein_type_map[j_str]
-        swappable.at[i, j].set(True)
-        swappable.at[j, i].set(True)
+        swappable = swappable.at[i, j].set(True)
+        swappable = swappable.at[j, i].set(True)
     return swappable
