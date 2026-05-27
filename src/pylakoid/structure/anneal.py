@@ -767,9 +767,76 @@ class SwapAdjacentRandomly(eqx.Module):
         )
 
 
+def _deo_sweep(
+    multi_membrane: MultiMembrane,
+    energy: Float[Array, " m"],
+    kBT: Float[Array, " m"],
+    key: Key[Array, ""],
+    parity: int,
+) -> tuple[MultiMembrane, Float[Array, " m"], Int[Array, " n_pairs"], Bool[Array, " n_pairs"]]:
+    """
+    Attempt parallel-tempering swaps on all replica pairs with the given parity.
+
+    Parameters:
+        multi_membrane: The `MultiMembrane` to swap.
+        energy: Energies of each replica.
+        kBT: Temperature of each replica.
+        key: A JAX random key.
+        parity: 0 for even pairs (0-1, 2-3, ...), 1 for odd pairs (1-2, 3-4, ...).
+
+    Returns:
+        (MultiMembrane): Updated membrane after swaps.
+        (Float[Array, " m"]): Updated energies after swaps.
+        (Int[Array, " n_pairs"]): Which pair indices were attempted.
+        (Bool[Array, " n_pairs"]): Boolean mask of which pairs were accepted.
+    """
+    n_replicas = energy.shape[0]
+    pair_indices = jnp.arange(parity, n_replicas - 1, 2)  # pyright: ignore [reportUnknownMemberType]
+    n_pairs = pair_indices.shape[0]
+
+    if n_pairs == 0:
+        return multi_membrane, energy, pair_indices, jnp.array([], dtype=jnp.bool_)  # pyright: ignore [reportUnknownMemberType]
+
+    j = pair_indices
+    log_p_accept = (1 / kBT[j] - 1 / kBT[j + 1]) * (energy[j] - energy[j + 1])
+    rands = jax.random.uniform(key, (n_pairs,))  # pyright: ignore [reportUnknownMemberType]
+    accepted = (log_p_accept > 0) | (rands < jnp.exp(log_p_accept))
+
+    def apply_swap(
+        i: Int[Array, ""], state: tuple[MultiMembrane, Float[Array, " m"]]
+    ) -> tuple[MultiMembrane, Float[Array, " m"]]:
+        membrane, e = state
+        ji = pair_indices[i]
+
+        def swap(x: Float[Array, "m ..."]) -> Float[Array, "m ..."]:
+            return x.at[ji].set(x[ji + 1]).at[ji + 1].set(x[ji])
+
+        return typing.cast(
+            tuple[MultiMembrane, Float[Array, " m"]],
+            jax.lax.cond(  # pyright: ignore [reportUnknownMemberType]
+                accepted[i],
+                lambda: (jax.tree.map(swap, membrane), swap(e)),
+                lambda: (membrane, e),
+            ),
+        )
+
+    multi_membrane, energy = typing.cast(
+        tuple[MultiMembrane, Float[Array, " m"]],
+        jax.lax.fori_loop(0, n_pairs, apply_swap, (multi_membrane, energy)),  # pyright: ignore [reportUnknownMemberType]
+    )
+    return multi_membrane, energy, pair_indices, accepted
+
+
 class SwapEvenOdd(eqx.Module):
     """
-    Swap membranes (0, 1), (2, 3), ... then (1, 2), (3, 4), ...
+    Deterministic Even-Odd parallel-tempering swapper. Each call performs one
+    full DEO cycle:
+
+    1. Attempt every even-indexed pair (0,1), (2,3), (4,5), ...
+    2. Attempt every odd-indexed pair (1,2), (3,4), (5,6), ...
+
+    Each pair is attempted exactly once per call, with Metropolis acceptance
+    `min(1, exp((1/kBT_i - 1/kBT_j) * (E_i - E_j)))`.
     """
 
     def __call__(
@@ -780,7 +847,7 @@ class SwapEvenOdd(eqx.Module):
         key: Key[Array, ""],
     ) -> tuple[MultiMembrane, Float[Array, " m"], SwapStats]:
         """
-        Swap membranes (0, 1), (2, 3), ... then (1, 2), (3, 4), ...
+        Perform one full DEO swap cycle.
 
         Parameters:
             multi_membrane: The `MultiMembrane` in which membranes may be swapped.
@@ -791,61 +858,30 @@ class SwapEvenOdd(eqx.Module):
         Returns:
             (MultiMembrane): The resulting `MultiMembrane` after swapping.
             (Float[Array, " m"]): The resulting energies after swapping.
-            (SwapStats): The number of accepted and attempted swaps.
+            (SwapStats): Per-boundary accepted and attempted counts (length m-1).
         """
+        n_pairs_total = energy.shape[0] - 1
+        n_accepted = jnp.zeros((n_pairs_total,), dtype=jnp.int32)  # pyright: ignore [reportUnknownMemberType]
+        n_attempted = jnp.zeros((n_pairs_total,), dtype=jnp.int32)  # pyright: ignore [reportUnknownMemberType]
 
-        def swap_with_offset(
-            offset: int,
-            multi_membrane: MultiMembrane,
-            energy: Float[Array, " m"],
-            kBT: Float[Array, " m"],
-            key: Key[Array, ""],
-        ) -> tuple[MultiMembrane, Float[Array, " m"], SwapStats]:
-            index = jnp.arange(offset, energy.shape[0], 2)  # pyright: ignore [reportUnknownMemberType]
-            p_accept = (1 / kBT[index] - 1 / kBT[index + 1]) * (
-                energy[index] - energy[index + 1]
-            )
-            rand = jax.random.uniform(key, (index.shape[0],))  # pyright: ignore [reportUnknownMemberType]
-            should_swap = (p_accept > 1) | (rand < p_accept)
-            new_index = (
-                jnp.arange(0, energy.shape[0])  # pyright: ignore [reportUnknownMemberType]
-                .at[index]
-                .set(index + should_swap)
-                .at[index + 1]
-                .set(index + 1 - should_swap)
-            )
-
-            def swap(x: Float[Array, "m ..."]):
-                return x[new_index]
-
-            stats_zero = make_swap_stats(energy.shape[0] - 1)
-            return (
-                jax.tree.map(swap, multi_membrane),
-                swap(energy),
-                SwapStats(
-                    stats_zero.n_accepted.at[index].set(should_swap),
-                    stats_zero.n_attempted.at[index].set(1),
-                ),
-            )
-
-        k1, k2 = jax.random.split(key, 2)
+        k_even, k_odd = jax.random.split(key, 2)
         del key
-        multi_membrane, energy, swaps0 = swap_with_offset(
-            0, multi_membrane, energy, kBT, k1
+
+        multi_membrane, energy, even_pairs, even_accepted = _deo_sweep(
+            multi_membrane, energy, kBT, k_even, parity=0
         )
-        del k1
-        multi_membrane, energy, swaps1 = swap_with_offset(
-            1, multi_membrane, energy, kBT, k2
+        n_attempted = n_attempted.at[even_pairs].add(1)
+        n_accepted = n_accepted.at[even_pairs].add(even_accepted.astype(jnp.int32))
+        del k_even
+
+        multi_membrane, energy, odd_pairs, odd_accepted = _deo_sweep(
+            multi_membrane, energy, kBT, k_odd, parity=1
         )
-        del k2
-        return (
-            multi_membrane,
-            energy,
-            SwapStats(
-                swaps0.n_accepted + swaps1.n_accepted,
-                swaps0.n_attempted + swaps1.n_attempted,
-            ),
-        )
+        n_attempted = n_attempted.at[odd_pairs].add(1)
+        n_accepted = n_accepted.at[odd_pairs].add(odd_accepted.astype(jnp.int32))
+        del k_odd
+
+        return multi_membrane, energy, SwapStats(n_accepted, n_attempted)
 
 
 def parallel_tempering(
