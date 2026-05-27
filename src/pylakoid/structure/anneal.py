@@ -17,14 +17,14 @@ class Membrane(eqx.Module):
     Attributes:
         center_of_mass: The center of mass of every protein.
         angle: The angle of every protein.
-        protein_type: The protein type of every protein. This is used for force field evaluation and for swapping.
         radius: The maximum norm of the 2d convex hull of every protein.
+        protein_type: The protein type of every protein. This is used for force field evaluation and for swapping.
     """
 
     center_of_mass: Float[Array, "p 2"]
     angle: Float[Array, " p"]
-    protein_type: Int[Array, " p"]
     radius: Float[Array, " p"]
+    protein_type: Int[Array, " p"]
 
     def __init__(
         self,
@@ -572,14 +572,14 @@ class MultiMembrane(eqx.Module):
     Attributes:
         center_of_mass: The center of mass of every protein in every membrane.
         angle: The angle of every protein in every membrane.
-        protein_type: The protein type of every protein in every membrane. This is used for force field evaluation and for swapping.
         radius: The maximum norm of the 2d convex hull of every protein in every membrane.
+        protein_type: The protein type of every protein in every membrane. This is used for force field evaluation and for swapping.
     """
 
     center_of_mass: Float[Array, "m p 2"]
     angle: Float[Array, "m p"]
-    protein_type: Int[Array, "m p"]
     radius: Float[Array, "m p"]
+    protein_type: Int[Array, "m p"]
 
     def __init__(
         self,

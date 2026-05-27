@@ -15,6 +15,8 @@
 # they will catch a regression of either bug regardless of implementation
 # refactors that preserve the contract.
 
+import inspect
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -505,6 +507,100 @@ def test_sample_swap_only_picks_eligible_positions():
         "occurred — sample_swap is using the raw randint(k) as a position "
         "instead of swap_eligible[k]."
     )
+
+
+def _signature_param_names(cls) -> list[str]:
+    """Return the (non-self) parameter names of cls.__init__ in declaration order."""
+    return [p for p in inspect.signature(cls.__init__).parameters if p != "self"]
+
+
+def _annotation_field_names(cls) -> list[str]:
+    """Return the names of cls's annotated class-level attributes in declaration
+    order (the order they appear in the class body, which Python preserves in
+    __annotations__ as of 3.7+)."""
+    return list(cls.__annotations__.keys())
+
+
+# ---------------------------------------------------------------------------
+# Membrane / MultiMembrane attribute order matches __init__ order
+# ---------------------------------------------------------------------------
+#
+# Both Membrane and MultiMembrane previously declared attributes as
+#   (center_of_mass, angle, protein_type, radius)
+# while __init__ took
+#   (center_of_mass, angle, radius, protein_type)
+#
+# Equinox modules tie the class-level attribute order to the pytree
+# flatten order, so a mismatch is a footgun for any code that
+# reconstructs a Membrane via positional fields (e.g. eqx.tree_at by
+# index, jax.tree.unflatten with reordered leaves, or dataclasses-style
+# iteration). All existing callers use the __init__ positional order
+# and so were unaffected, but the inconsistency was a latent hazard.
+
+
+def test_membrane_attribute_order_matches_init_order():
+    """Membrane: declared attribute order == __init__ parameter order."""
+    init_order = _signature_param_names(anneal.Membrane)
+    decl_order = _annotation_field_names(anneal.Membrane)
+    assert init_order == decl_order, (
+        f"__init__ params {init_order} disagree with declared attributes "
+        f"{decl_order} — eqx pytree leaf order will not match the constructor."
+    )
+
+
+def test_multi_membrane_attribute_order_matches_init_order():
+    """MultiMembrane: declared attribute order == __init__ parameter order."""
+    init_order = _signature_param_names(anneal.MultiMembrane)
+    decl_order = _annotation_field_names(anneal.MultiMembrane)
+    assert init_order == decl_order, (
+        f"__init__ params {init_order} disagree with declared attributes "
+        f"{decl_order} — eqx pytree leaf order will not match the constructor."
+    )
+
+
+def test_membrane_pytree_round_trip_preserves_fields():
+    """A Membrane that is flattened and unflattened via jax.tree.flatten must
+    survive with every field intact. If the eqx-declared attribute order
+    differs from __init__ order, the pytree leaves come out in declared
+    order while unflatten passes them positionally to __init__ — silently
+    swapping radius and protein_type. Catches the bug at runtime."""
+    p = 4
+    com = jnp.arange(2 * p, dtype=jnp.float32).reshape(p, 2)
+    angle = jnp.full((p,), 0.5, dtype=jnp.float32)
+    radius = jnp.full((p,), 42.0, dtype=jnp.float32)
+    protein_type = jnp.array([0, 1, 2, 0], dtype=jnp.int32)
+
+    m = anneal.Membrane(com, angle, radius, protein_type)
+    leaves, treedef = jax.tree.flatten(m)
+    m2 = jax.tree.unflatten(treedef, leaves)
+
+    assert jnp.array_equal(m2.center_of_mass, com)
+    assert jnp.array_equal(m2.angle, angle)
+    assert jnp.array_equal(m2.radius, radius)
+    assert jnp.array_equal(m2.protein_type, protein_type)
+    # And specifically that radius and protein_type weren't transposed:
+    assert m2.radius.dtype == jnp.float32
+    assert m2.protein_type.dtype == jnp.int32
+
+
+def test_multi_membrane_pytree_round_trip_preserves_fields():
+    """Same pytree round-trip check for MultiMembrane."""
+    m, p = 3, 4
+    com = jnp.arange(m * p * 2, dtype=jnp.float32).reshape(m, p, 2)
+    angle = jnp.full((m, p), 0.5, dtype=jnp.float32)
+    radius = jnp.full((m, p), 42.0, dtype=jnp.float32)
+    protein_type = jnp.zeros((m, p), dtype=jnp.int32)
+
+    mm = anneal.MultiMembrane(com, angle, radius, protein_type)
+    leaves, treedef = jax.tree.flatten(mm)
+    mm2 = jax.tree.unflatten(treedef, leaves)
+
+    assert jnp.array_equal(mm2.center_of_mass, com)
+    assert jnp.array_equal(mm2.angle, angle)
+    assert jnp.array_equal(mm2.radius, radius)
+    assert jnp.array_equal(mm2.protein_type, protein_type)
+    assert mm2.radius.dtype == jnp.float32
+    assert mm2.protein_type.dtype == jnp.int32
 
 
 def test_sample_swap_preserves_type_counts():
