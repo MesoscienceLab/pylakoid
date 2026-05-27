@@ -427,3 +427,121 @@ def test_swap_adjacent_randomly_is_jit_compatible():
     jitted = eqx.filter_jit(anneal.SwapAdjacentRandomly(10))
     _, _, stats = jitted(mm, energy, kBT, jax.random.key(0))
     assert stats.n_accepted.shape == (num_replicas - 1,)
+
+
+# ---------------------------------------------------------------------------
+# sample_swap respects swap eligibility
+# ---------------------------------------------------------------------------
+#
+# Bug: sample_swap built swap_eligible = jnp.where(swappable[pt1, types],
+# size=N)[0] but then never used it: index2 was sampled in [0, n_eligible)
+# and used DIRECTLY as a position index. This only happens to be correct
+# when the eligible positions are contiguous starting at 0 (e.g.
+# MembranePipeline puts all PSII proteins first, so for a PSII-pt1 the
+# eligible PSII positions are exactly 0..N_PSII-1). Any other layout
+# silently lets sample_swap pick ineligible positions, producing an
+# illegal type swap that the validity checker (which only verifies
+# boundary / position constraints, not type compatibility) lets through.
+#
+# Fix: index2 = swap_eligible[k].
+
+
+def _always_accept_checker(com, angle, pt, index, out_sharding=None):
+    """Stub Checker that approves every move (any 2-arg signature consistent
+    with the Checker callable contract is fine)."""
+    return jnp.array(True)
+
+
+def _zero_force_field(com1, angle1, pt1, com2, angle2, pt2):
+    """Stub ForceField returning zero so dE is always 0 and acceptance
+    only depends on swap-eligibility logic, not Metropolis."""
+    return jnp.array(0.0)
+
+
+def test_sample_swap_only_picks_eligible_positions():
+    """4-protein membrane alternating PSII (type 0) and LHCII (type 1).
+    swappable[0, 0] = True only — so the only legal swap is PSII<->PSII,
+    which is a no-op on protein_type (identical types). After many
+    sample_swap iterations, protein_type at every position must be unchanged.
+
+    The broken code samples index2 in [0, n_eligible) and uses it as a
+    direct position index. With eligible positions [0, 2], n_eligible=2 ->
+    index2 ∈ {0, 1}. Picking index2=1 dereferences the LHCII at position 1,
+    so the broken code performs an illegal PSII<->LHCII swap that the
+    validity check (no type compatibility test) lets through. This test
+    catches that by asserting type layout is preserved.
+    """
+    num_proteins = 4
+    com = jnp.zeros((num_proteins, 2))
+    angle = jnp.zeros(num_proteins)
+    radius = jnp.ones(num_proteins)
+    original_protein_type = jnp.array([0, 1, 0, 1], dtype=jnp.int32)
+    membrane = anneal.Membrane(com, angle, radius, original_protein_type)
+
+    # swappable: only PSII (type 0) can swap with itself.
+    swappable = (
+        jnp.zeros((2, 2), dtype=jnp.bool_)
+        .at[0, 0].set(True)
+    )
+
+    kBT = jnp.array(1.0)
+
+    state = membrane
+    n_iter = 100
+    for k in range(n_iter):
+        state, _ = anneal.sample_swap(
+            state,
+            swappable,
+            _zero_force_field,
+            _always_accept_checker,
+            kBT,
+            jax.random.key(k),
+            initial_energy=jnp.array(0.0),
+        )
+
+    assert jnp.array_equal(state.protein_type, original_protein_type), (
+        f"Types changed: started {original_protein_type.tolist()}, "
+        f"ended {state.protein_type.tolist()}. An illegal type swap "
+        "occurred — sample_swap is using the raw randint(k) as a position "
+        "instead of swap_eligible[k]."
+    )
+
+
+def test_sample_swap_preserves_type_counts():
+    """Even when types differ, the count of each type in the membrane must
+    be exactly preserved by sample_swap (a swap is a permutation of types).
+    Tests on a 6-protein membrane with three types, where only two of them
+    are swappable, and the swappable positions are non-contiguous."""
+    num_proteins = 6
+    com = jnp.zeros((num_proteins, 2))
+    angle = jnp.zeros(num_proteins)
+    radius = jnp.ones(num_proteins)
+    # Types: A=0, B=1, C=2. Layout: [A, B, A, C, B, A]. Counts: A=3, B=2, C=1.
+    # Only A<->A is swappable -> no-op on counts even if real swap mechanics fire.
+    original_protein_type = jnp.array([0, 1, 0, 2, 1, 0], dtype=jnp.int32)
+    membrane = anneal.Membrane(com, angle, radius, original_protein_type)
+
+    swappable = (
+        jnp.zeros((3, 3), dtype=jnp.bool_)
+        .at[0, 0].set(True)
+    )
+
+    state = membrane
+    for k in range(50):
+        state, _ = anneal.sample_swap(
+            state,
+            swappable,
+            _zero_force_field,
+            _always_accept_checker,
+            jnp.array(1.0),
+            jax.random.key(k),
+            initial_energy=jnp.array(0.0),
+        )
+
+    # Type counts preserved.
+    for t in range(3):
+        assert int(jnp.sum(state.protein_type == t)) == int(
+            jnp.sum(original_protein_type == t)
+        ), f"Count of type {t} changed."
+    # And position layout preserved (since only no-op swaps are legal).
+    assert jnp.array_equal(state.protein_type, original_protein_type)

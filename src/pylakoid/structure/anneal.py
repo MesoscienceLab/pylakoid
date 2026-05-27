@@ -331,10 +331,11 @@ def sample_swap(
         swappable[pt1, membrane.protein_type],
         size=membrane.protein_type.shape[0],
     )[0]
-    index2 = jax.random.randint(  # pyright: ignore [reportUnknownMemberType]
+    k = jax.random.randint(  # pyright: ignore [reportUnknownMemberType]
         k2, (), minval=0, maxval=jnp.sum(swappable[pt1, membrane.protein_type])
     )
     del k2
+    index2 = swap_eligible[k]
     pt2 = membrane.protein_type[index2]
     r2 = membrane.radius[index2]
 
