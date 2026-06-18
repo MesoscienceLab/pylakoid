@@ -90,7 +90,7 @@ def prepare_swappable(
     """
 
     num_types = max([t + 1 for t in protein_type_map.values()])
-    swappable = jnp.zeros((num_types, num_types), dtype=jnp.bool)  # pyright: ignore [reportUnknownMemberType]
+    swappable = jnp.zeros((num_types, num_types), dtype=jnp.bool_)  # pyright: ignore [reportUnknownMemberType]
     for i_str, j_str in can_swap:
         i = protein_type_map[i_str]
         j = protein_type_map[j_str]
