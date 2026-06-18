@@ -6,7 +6,7 @@ from typing import Annotated
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, Float, Int, Key
+from jaxtyping import Array, Bool, Float, Int, Key
 import numpy as np
 import pydantic
 import safetensors.numpy
@@ -124,7 +124,7 @@ def make_protein_positions(
 
 def make_simulation_permissions(
     n_prot: int, protein_type_map: dict[str, int]
-) -> tuple[Int[Array, " p"], Int[Array, " p"], Int[Array, "s s"]]:
+) -> tuple[Int[Array, " p"], Int[Array, " p"], Bool[Array, "s s"]]:
     translatable = jnp.array(list(range(n_prot)), dtype=jnp.int32)  # pyright: ignore [reportUnknownMemberType]
     rotatable = jnp.array(list(range(n_prot)), dtype=jnp.int32)  # pyright: ignore [reportUnknownMemberType]
     swappable = ah.prepare_swappable([], protein_type_map)
@@ -136,7 +136,7 @@ def parallel_tempering_loop(
     tempering_params: Float[Array, "a 3"],
     translatable: Int[Array, " p"],
     rotatable: Int[Array, " p"],
-    swappable: Int[Array, " s"],
+    swappable: Bool[Array, "s s"],
     force_field: ff.ForceField,
     checker: Checker,
     swapper: anneal.Swapper,
