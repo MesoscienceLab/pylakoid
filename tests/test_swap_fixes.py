@@ -1,19 +1,31 @@
-# Regression tests for two related bug fixes in pylakoid's parallel tempering:
+# Regression tests for bug fixes in pylakoid's parallel tempering and swap logic.
+# Covered regressions:
 #
-# 1. anneal_helpers.prepare_swappable was returning an all-False matrix because
-#    the result of swappable.at[i, j].set(True) was discarded (JAX functional
-#    update mistakenly used as if it were in-place).
+# 1. anneal_helpers.prepare_swappable returned an all-False matrix because the
+#    result of swappable.at[i, j].set(True) was discarded (JAX functional update
+#    mistakenly used as if it were in-place).
 #
 # 2. anneal.SwapEvenOdd's Metropolis acceptance treated
-#    (1/kT_i - 1/kT_j) * (E_i - E_j) as if it were a probability, when it is
-#    in fact the log of the Metropolis factor. After the fix, SwapEvenOdd is
-#    a deterministic even-odd (DEO) sweep using log_p_accept > 0 |
-#    rand < exp(log_p_accept) and arange(parity, n-1, 2) so j+1 is in-bounds.
+#    (1/kT_i - 1/kT_j) * (E_i - E_j) as if it were a probability, when it is in
+#    fact the log of the Metropolis factor. SwapEvenOdd is now a deterministic
+#    even-odd (DEO) sweep using rand < exp(min(log_p_accept, 0)) and
+#    arange(parity, n-1, 2) so j+1 is in-bounds.
+#
+# 3. anneal.SwapAdjacentRandomly's Metropolis acceptance had the same log-factor
+#    issue; it now uses the overflow-safe rand < exp(min(log_p_accept, 0)).
+#
+# 4. anneal.sample_swap eligibility: it used the raw randint as a position index
+#    instead of dereferencing swap_eligible[k], and gated validity on
+#    jnp.any(swap_eligible) (False when the sole eligible partner is position 0).
+#    It now dereferences swap_eligible[k] and gates on n_eligible > 0.
+#
+# 5. Membrane / MultiMembrane class-attribute order matching __init__ order
+#    (Equinox ties class-attribute order to pytree leaf order).
 #
 # These tests are written against the public API (SwapStats return type,
-# SwapEvenOdd constructor taking no args, prepare_swappable signature) so
-# they will catch a regression of either bug regardless of implementation
-# refactors that preserve the contract.
+# SwapEvenOdd constructor taking no args, prepare_swappable signature, Membrane /
+# MultiMembrane fields) so they catch a regression of any of these bugs
+# regardless of implementation refactors that preserve the contract.
 
 import inspect
 
@@ -449,8 +461,8 @@ def test_swap_adjacent_randomly_is_jit_compatible():
 
 
 def _always_accept_checker(com, angle, pt, index, out_sharding=None):
-    """Stub Checker that approves every move (any 2-arg signature consistent
-    with the Checker callable contract is fine)."""
+    """Stub Checker that approves every move. sample_swap calls the checker as
+    (center_of_mass, angle, protein_type, index, out_sharding=...)."""
     return jnp.array(True)
 
 

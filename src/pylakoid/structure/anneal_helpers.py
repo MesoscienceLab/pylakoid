@@ -2,7 +2,7 @@ import typing
 
 import Bio.PDB.Structure
 import jax.numpy as jnp
-from jaxtyping import Array, Int, Float
+from jaxtyping import Array, Bool, Int, Float
 
 from pylakoid.structure.vdw_radii import vdw_radii
 
@@ -75,7 +75,7 @@ def prepare_protein_type(
 
 def prepare_swappable(
     can_swap: list[tuple[str, str]], protein_type_map: dict[str, int]
-) -> Int[Array, "s s"]:
+) -> Bool[Array, "s s"]:
     """
     Prepare the `swappable` parameter for `run_monte_carlo` from a list of swappable pairs and
     a protein type map (see `prepare_protein_type`).
@@ -85,8 +85,8 @@ def prepare_swappable(
         protein_type_map: A dictionary mapping `str` protein type to internal `int` `protein_type`.
 
     Returns:
-        The `protein_type` for the proteins in the membrane in the format needed by
-            `Membrane.__init__`
+        A symmetric boolean matrix `swappable` where `swappable[i, j]` is `True` if proteins
+            of internal type `i` and type `j` may be swapped.
     """
 
     num_types = max([t + 1 for t in protein_type_map.values()])

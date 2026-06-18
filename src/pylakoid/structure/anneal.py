@@ -40,8 +40,8 @@ class Membrane(eqx.Module):
         Parameters:
             center_of_mass: The center of mass of every protein.
             angle: The angle of every protein.
-            protein_type: The protein type of every protein. This is used for force field evaluation and for swapping.
             radius: The maximum norm of the 2d convex hull of every protein.
+            protein_type: The protein type of every protein. This is used for force field evaluation and for swapping.
         """
         self.center_of_mass = center_of_mass
         self.angle = angle
@@ -592,11 +592,11 @@ class MultiMembrane(eqx.Module):
         """
         Initialize a `MultiMembrane`.
 
-        Attributes:
+        Parameters:
             center_of_mass: The center of mass of every protein in every membrane.
             angle: The angle of every protein in every membrane.
-            protein_type: The protein type of every protein in every membrane. This is used for force field evaluation and for swapping.
             radius: The maximum norm of the 2d convex hull of every protein in every membrane.
+            protein_type: The protein type of every protein in every membrane. This is used for force field evaluation and for swapping.
         """
         self.center_of_mass = center_of_mass
         self.angle = angle
