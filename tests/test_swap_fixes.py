@@ -509,6 +509,73 @@ def test_sample_swap_only_picks_eligible_positions():
     )
 
 
+# ---------------------------------------------------------------------------
+#
+# Bug: sample_swap gated validity with `jnp.any(swap_eligible)`. swap_eligible
+# is built by jnp.where(..., size=N), which pads unused slots with 0. When the
+# ONLY eligible swap partner for the chosen index1 sits at position 0,
+# swap_eligible is all zeros, so jnp.any(...) is False and a legitimate swap is
+# rejected. This silently biases the sampler against swaps whose partner is
+# particle 0.
+#
+# Fix: track n_eligible = jnp.sum(swappable[pt1, types]) and gate validity on
+# (n_eligible > 0); also keep the randint maxval safe via maximum(n_eligible, 1).
+
+
+def test_sample_swap_accepts_swap_when_only_partner_is_index_0():
+    """2-protein membrane, types [0, 1], with only the cross pair 0<->1
+    swappable. Every step has dE == 0 (zero force field) and an always-accept
+    checker, so a correct sample_swap accepts a swap on EVERY iteration,
+    whichever protein is chosen as index1 (the two positions always hold
+    different types, so every accepted swap is observable in protein_type).
+
+    For whichever index1 is the protein whose sole eligible partner sits at
+    position 0, swap_eligible == [0, 0]; the buggy `jnp.any(swap_eligible)`
+    gate evaluates False and that swap is wrongly rejected. The buggy code
+    therefore swaps on only ~half the steps; the fixed code swaps on all of
+    them. Asserting a swap on every step isolates the gate bug.
+    """
+    num_proteins = 2
+    com = jnp.zeros((num_proteins, 2))
+    angle = jnp.zeros(num_proteins)
+    radius = jnp.ones(num_proteins)
+    protein_type = jnp.array([0, 1], dtype=jnp.int32)
+    membrane = anneal.Membrane(com, angle, radius, protein_type)
+
+    # Only the cross pair is swappable (no self-swaps), so for the type whose
+    # partner is the type at position 0, the sole eligible position is 0.
+    swappable = (
+        jnp.zeros((2, 2), dtype=jnp.bool_)
+        .at[0, 1].set(True)
+        .at[1, 0].set(True)
+    )
+    kBT = jnp.array(1.0)
+
+    n_iter = 50
+    state = membrane
+    swaps_observed = 0
+    for k in range(n_iter):
+        new_state, _ = anneal.sample_swap(
+            state,
+            swappable,
+            _zero_force_field,
+            _always_accept_checker,
+            kBT,
+            jax.random.key(k),
+            initial_energy=jnp.array(0.0),
+        )
+        if not jnp.array_equal(new_state.protein_type, state.protein_type):
+            swaps_observed += 1
+        state = new_state
+
+    assert swaps_observed == n_iter, (
+        f"Expected a swap on every one of {n_iter} steps (dE=0, always-accept "
+        f"checker), but only {swaps_observed} occurred. sample_swap is gating "
+        "validity on jnp.any(swap_eligible), which is False when the sole "
+        "eligible partner is position 0 (swap_eligible padded with zeros)."
+    )
+
+
 def _signature_param_names(cls) -> list[str]:
     """Return the (non-self) parameter names of cls.__init__ in declaration order."""
     return [p for p in inspect.signature(cls.__init__).parameters if p != "self"]

@@ -331,8 +331,9 @@ def sample_swap(
         swappable[pt1, membrane.protein_type],
         size=membrane.protein_type.shape[0],
     )[0]
+    n_eligible = jnp.sum(swappable[pt1, membrane.protein_type])  # pyright: ignore [reportUnknownMemberType]
     k = jax.random.randint(  # pyright: ignore [reportUnknownMemberType]
-        k2, (), minval=0, maxval=jnp.sum(swappable[pt1, membrane.protein_type])
+        k2, (), minval=0, maxval=jnp.maximum(n_eligible, 1)
     )
     del k2
     index2 = swap_eligible[k]
@@ -348,7 +349,7 @@ def sample_swap(
         new_protein_type,
     )
     is_valid = (
-        jnp.any(swap_eligible)
+        (n_eligible > 0)
         & checker(
             new_membrane.center_of_mass[index1],
             new_membrane.angle[index1],
@@ -733,7 +734,7 @@ class SwapAdjacentRandomly(eqx.Module):
             return typing.cast(
                 tuple[MultiMembrane, Float[Array, " m"], SwapStats],
                 jax.lax.cond(  # pyright: ignore [reportUnknownMemberType]
-                    rand < jnp.exp(jnp.minimum(log_p_accept, 0.0))
+                    rand < jnp.exp(jnp.minimum(log_p_accept, 0.0)),
                     lambda: (
                         jax.tree.map(swap, membrane),
                         swap(energy),
