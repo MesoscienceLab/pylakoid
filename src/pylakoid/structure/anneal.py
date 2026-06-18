@@ -801,7 +801,7 @@ def _deo_sweep(
     j = pair_indices
     log_p_accept = (1 / kBT[j] - 1 / kBT[j + 1]) * (energy[j] - energy[j + 1])
     rands = jax.random.uniform(key, (n_pairs,))  # pyright: ignore [reportUnknownMemberType]
-    accepted = (log_p_accept > 0) | (rands < jnp.exp(log_p_accept))
+    accepted = rands < jnp.exp(jnp.minimum(log_p_accept, 0.0))
 
     def apply_swap(
         i: Int[Array, ""], state: tuple[MultiMembrane, Float[Array, " m"]]
