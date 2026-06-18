@@ -733,7 +733,7 @@ class SwapAdjacentRandomly(eqx.Module):
             return typing.cast(
                 tuple[MultiMembrane, Float[Array, " m"], SwapStats],
                 jax.lax.cond(  # pyright: ignore [reportUnknownMemberType]
-                    (log_p_accept > 0) | (rand < jnp.exp(log_p_accept)),
+                    rand < jnp.exp(jnp.minimum(log_p_accept, 0.0))
                     lambda: (
                         jax.tree.map(swap, membrane),
                         swap(energy),
